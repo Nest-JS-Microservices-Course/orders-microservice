@@ -1,10 +1,11 @@
 import { HttpStatus, Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { ChangeOrderStatusDto, CreateOrderDto } from './dto'
+import { ChangeOrderStatusDto, CreateOrderDto, PaidOrderDto } from './dto'
 import { PrismaClient } from '@prisma/client';
 import { ClientProxy, RpcException } from '@nestjs/microservices';
 import { OrderPaginationDto } from './dto/order-pagination.dto';
 import { NATS_SERVICE } from 'src/config/services';
 import { firstValueFrom } from 'rxjs';
+import { OrderWithProducts } from './interfaces/order-with-products.interface';
 
 @Injectable()
 export class OrdersService extends PrismaClient implements OnModuleInit {
@@ -141,7 +142,7 @@ export class OrdersService extends PrismaClient implements OnModuleInit {
       })
     };
 
-    const productsIds = order.OrderItem.map( orderItem => orderItem.productId );
+    const productsIds = order.OrderItem.map(orderItem => orderItem.productId);
 
     const products: any[] = await firstValueFrom(
       this.client.send({ cmd: 'validate_products' }, productsIds)
@@ -149,10 +150,10 @@ export class OrdersService extends PrismaClient implements OnModuleInit {
 
     return {
       ...order,
-      OrderItem: order.OrderItem.map( (orderItem) => ({
+      OrderItem: order.OrderItem.map((orderItem) => ({
         ...orderItem,
-        name: products.find( product => product.id === orderItem.productId ).name
-      }) )
+        name: products.find(product => product.id === orderItem.productId).name
+      }))
 
     };
   }
@@ -180,5 +181,47 @@ export class OrdersService extends PrismaClient implements OnModuleInit {
 
     })
 
+  }
+
+  async createPaymentSession(order: OrderWithProducts) {
+    const paymentSession = await firstValueFrom(
+      this.client.send('create.payment.session', {
+        orderId: order.id,
+        currency: 'usd',
+        items: order.OrderItem.map(item => ({
+          name: item.name,
+          price: item.price,
+          quantity: item.quantity
+        }))
+      })
+    )
+
+    return paymentSession;
+  }
+
+  async markOrderAsPaid(paidOrderDto: PaidOrderDto) {
+    this.logger.log('Order Paid');
+    this.logger.log(paidOrderDto);
+
+    const order = await this.order.update({
+      where: {
+        id: paidOrderDto.orderId
+      },
+      data: {
+        status: 'PAID',
+        paid: true,
+        paidAt: new Date(),
+        stripeChargeId: paidOrderDto.stripePaymentId,
+
+        // Relation
+        OrderReceipt: {
+          create: {
+            receiptUrl: paidOrderDto.receiptUrl
+          }
+        }
+      }
+    });
+
+    return { order }
   }
 }
